@@ -30,6 +30,48 @@ The handler ([api/queue.js](api/queue.js)) does three things:
 > playing (or have recently played) on Spotify, or the call returns
 > `Queue failed: Not Found`.
 
+# Usage with Shortcuts:
+
+In order to use this program with Siri, a series of steps must be taken to create a new shortcut in the iOS Shortcuts app
+
+1. Open the **Shortcuts** app → tap **+** (top-right) to create a new shortcut.
+2. Tap **Add Action** and add each of these, in order:
+
+   **Step 1 — Ask for Input**
+   - Search "Ask for Input" and tap it.
+   - Set **Input Type** to **Text**.
+   - Set the prompt to `What song?`
+   - (This creates a variable called **Provided Input** — the song you say.)
+
+   **Step 2 — Get Contents of URL**
+   - Search "Get Contents of URL" and tap it.
+   - **Important:** the URL box may auto-fill with a blue *Provided Input* chip.
+     **Delete it** and type the address by hand, exactly:
+     `https://siri-spotify-queue.vercel.app/api/queue`
+     (It must be plain text starting with `https://` — no blue variable, no
+     spaces. A variable or stray character here causes an "unsupported URL" or
+     "Rich Text to URL" error.)
+   - Tap **Show More** to reveal the rest, then set:
+     - **Method**: `POST`
+     - **Headers** → add two:
+       - `Content-Type` = `application/json`
+       - `x-queue-secret` = *(your QUEUE_SECRET value)*
+     - **Request Body**: `JSON`
+       - Add a field → key `song`, type **Text**, value = the **Provided Input**
+         variable from Step 1. (This is the *only* place the song variable goes.)
+
+   **Step 3 — Get Dictionary Value**
+   - Search "Get Dictionary Value" and tap it.
+   - Get value for `queued` in **Contents of URL**.
+
+   **Step 4 — Show Notification**
+   - Search "Show Notification" and tap it.
+   - Body: type `Queued: ` then insert the **Dictionary Value** variable.
+
+3. Tap the shortcut's name at the top and rename it to **Queue Song**. That name
+   becomes the phrase Siri listens for.
+
+
 ## Environment variables
 
 Set these locally in `.env` and in the Vercel project settings (Production +
@@ -40,6 +82,12 @@ Preview):
 | `SPOTIFY_CLIENT_ID`      | Spotify Developer Dashboard → your app            |
 | `SPOTIFY_CLIENT_SECRET`  | Spotify Developer Dashboard → your app            |
 | `SPOTIFY_REFRESH_TOKEN`  | Generated via the Authorization Code flow (below) |
+| `QUEUE_SECRET`           | A random string you choose (`openssl rand -hex 24`) |
+
+`QUEUE_SECRET` protects the endpoint: every request must send it in an
+`x-queue-secret` header, or it's rejected with `401 Unauthorized`. The Siri
+Shortcut sends this header (see below). When `QUEUE_SECRET` is unset (e.g. local
+tests), the gate is skipped.
 
 ### Generating a refresh token
 
