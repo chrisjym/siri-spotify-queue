@@ -1,4 +1,4 @@
-import fetch from "node-fetch";
+// Uses the global fetch built into Vercel's Node 18+ runtime.
 
 // --- Token Refresh ---
 async function refreshAccessToken() {
@@ -81,8 +81,9 @@ async function queueTrack(trackUri, accessToken) {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
 
-  // 204 No Content is the success response from Spotify for this endpoint
-  if (response.status !== 204) {
+  // Spotify documents 204 No Content, but in practice also returns 200 OK
+  // (with a short body) for this endpoint. Treat any 2xx as success.
+  if (!response.ok) {
     const error = await response.json().catch(() => ({}));
     throw new Error(
       `Queue failed: ${error.error?.message || response.statusText}`,

@@ -109,7 +109,7 @@ before(async () => {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
 
-    if (response.status !== 204) {
+    if (!response.ok) {
       const error = await response.json().catch(() => ({}));
       throw new Error(
         `Queue failed: ${error.error?.message || response.statusText}`,
