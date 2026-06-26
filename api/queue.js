@@ -97,6 +97,13 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed. Use POST." });
   }
 
+  // Shared-secret gate. Only enforced when QUEUE_SECRET is configured, so the
+  // function still works locally / in tests when it is unset.
+  const secret = process.env.QUEUE_SECRET;
+  if (secret && req.headers["x-queue-secret"] !== secret) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
   const { song } = req.body;
 
   if (!song || typeof song !== "string" || song.trim() === "") {
