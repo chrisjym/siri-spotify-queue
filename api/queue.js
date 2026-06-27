@@ -39,12 +39,36 @@ async function refreshAccessToken() {
   return data.access_token;
 }
 
+// Lowercase, strip diacritics and punctuation, collapse whitespace — so
+// "Blinding Lights" matches "blinding lights" or "Blínding  Lights!".
+function normalize(s) {
+  return s
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "") // combining diacritical marks
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Rank a candidate's title against the (normalized) query. Higher is better.
+function titleScore(trackName, normalizedQuery) {
+  const name = normalize(trackName);
+  if (name === normalizedQuery) return 3; // exact title
+  if (normalizedQuery.includes(name)) return 2; // query "title artist" contains the title
+  if (name.includes(normalizedQuery)) return 1; // title contains the query
+  return 0;
+}
+
 // --- Search for Track ---
 async function searchTrack(songName, accessToken) {
   const url = new URL("https://api.spotify.com/v1/search");
   url.searchParams.set("q", songName);
   url.searchParams.set("type", "track");
-  url.searchParams.set("limit", "1");
+  url.searchParams.set("limit", "10");
+  // Resolve results against the account's country so ranking is consistent and
+  // tracks are playable. Override with SPOTIFY_MARKET (e.g. "US") if needed.
+  url.searchParams.set("market", process.env.SPOTIFY_MARKET || "from_token");
 
   const response = await fetch(url.toString(), {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -58,11 +82,26 @@ async function searchTrack(songName, accessToken) {
   }
 
   const data = await response.json();
-  const track = data.tracks?.items?.[0];
+  const items = data.tracks?.items || [];
 
-  if (!track) {
+  if (items.length === 0) {
     throw new Error(`No track found for: "${songName}"`);
   }
+
+  // Spotify's top result is popularity-weighted and can return the wrong song
+  // by the same artist. Prefer the best title match, tie-broken by popularity.
+  const q = normalize(songName);
+  const best = items.reduce((bestSoFar, candidate) => {
+    const score = titleScore(candidate.name, q);
+    const bestScore = titleScore(bestSoFar.name, q);
+    if (score !== bestScore) return score > bestScore ? candidate : bestSoFar;
+    return (candidate.popularity || 0) > (bestSoFar.popularity || 0)
+      ? candidate
+      : bestSoFar;
+  });
+
+  // If nothing matched the title at all, fall back to Spotify's top result.
+  const track = titleScore(best.name, q) > 0 ? best : items[0];
 
   return {
     uri: track.uri,

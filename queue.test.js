@@ -72,11 +72,29 @@ before(async () => {
     return data.access_token;
   };
 
+  const normalize = (s) =>
+    s
+      .normalize("NFKD")
+      .replace(/[̀-ͯ]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const titleScore = (trackName, normalizedQuery) => {
+    const name = normalize(trackName);
+    if (name === normalizedQuery) return 3;
+    if (normalizedQuery.includes(name)) return 2;
+    if (name.includes(normalizedQuery)) return 1;
+    return 0;
+  };
+
   searchTrack = async (songName, accessToken) => {
     const url = new URL("https://api.spotify.com/v1/search");
     url.searchParams.set("q", songName);
     url.searchParams.set("type", "track");
-    url.searchParams.set("limit", "1");
+    url.searchParams.set("limit", "10");
+    url.searchParams.set("market", process.env.SPOTIFY_MARKET || "from_token");
 
     const response = await fetch(url.toString(), {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -90,11 +108,23 @@ before(async () => {
     }
 
     const data = await response.json();
-    const track = data.tracks?.items?.[0];
+    const items = data.tracks?.items || [];
 
-    if (!track) {
+    if (items.length === 0) {
       throw new Error(`No track found for: "${songName}"`);
     }
+
+    const q = normalize(songName);
+    const best = items.reduce((bestSoFar, candidate) => {
+      const score = titleScore(candidate.name, q);
+      const bestScore = titleScore(bestSoFar.name, q);
+      if (score !== bestScore) return score > bestScore ? candidate : bestSoFar;
+      return (candidate.popularity || 0) > (bestSoFar.popularity || 0)
+        ? candidate
+        : bestSoFar;
+    });
+
+    const track = titleScore(best.name, q) > 0 ? best : items[0];
 
     return {
       uri: track.uri,
@@ -309,6 +339,117 @@ describe("searchTrack", () => {
       () => searchTrack("any song", "bad-token"),
       /Search failed: Unauthorized/,
     );
+  });
+
+  it("picks the title match over a more popular wrong track", async () => {
+    mockFetch(() =>
+      makeFetchResponse({
+        ok: true,
+        status: 200,
+        body: {
+          tracks: {
+            items: [
+              {
+                uri: "spotify:track:starboy",
+                name: "Starboy",
+                popularity: 95,
+                artists: [{ name: "The Weeknd" }],
+              },
+              {
+                uri: "spotify:track:blinding",
+                name: "Blinding Lights",
+                popularity: 90,
+                artists: [{ name: "The Weeknd" }],
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    const track = await searchTrack("Blinding Lights", "mock-token");
+    assert.equal(track.uri, "spotify:track:blinding");
+    assert.equal(track.name, "Blinding Lights");
+  });
+
+  it("breaks ties between same-title tracks by popularity", async () => {
+    mockFetch(() =>
+      makeFetchResponse({
+        ok: true,
+        status: 200,
+        body: {
+          tracks: {
+            items: [
+              {
+                uri: "spotify:track:live",
+                name: "Blinding Lights",
+                popularity: 40,
+                artists: [{ name: "The Weeknd" }],
+              },
+              {
+                uri: "spotify:track:studio",
+                name: "Blinding Lights",
+                popularity: 90,
+                artists: [{ name: "The Weeknd" }],
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    const track = await searchTrack("Blinding Lights", "mock-token");
+    assert.equal(track.uri, "spotify:track:studio");
+  });
+
+  it("falls back to the first result when no title matches", async () => {
+    mockFetch(() =>
+      makeFetchResponse({
+        ok: true,
+        status: 200,
+        body: {
+          tracks: {
+            items: [
+              {
+                uri: "spotify:track:first",
+                name: "Something Else Entirely",
+                popularity: 10,
+                artists: [{ name: "Other Artist" }],
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    const track = await searchTrack("Blinding Lights", "mock-token");
+    assert.equal(track.uri, "spotify:track:first");
+  });
+
+  it("sends a market parameter", async () => {
+    let calledUrl;
+    mockFetch((url) => {
+      calledUrl = url;
+      return makeFetchResponse({
+        ok: true,
+        status: 200,
+        body: {
+          tracks: {
+            items: [
+              {
+                uri: "spotify:track:abc",
+                name: "Blinding Lights",
+                popularity: 90,
+                artists: [{ name: "The Weeknd" }],
+              },
+            ],
+          },
+        },
+      });
+    });
+
+    await searchTrack("Blinding Lights", "mock-token");
+    assert.match(calledUrl, /market=/);
   });
 });
 
