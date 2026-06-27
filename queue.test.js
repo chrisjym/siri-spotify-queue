@@ -8,6 +8,9 @@ import assert from "node:assert/strict";
 let refreshAccessToken;
 let searchTrack;
 let queueTrack;
+let getDevices;
+let transferPlayback;
+let ensureActiveDevice;
 
 // Helper: replace global fetch with a mock, restore after each test
 function mockFetch(mockFn) {
@@ -100,9 +103,12 @@ before(async () => {
     };
   };
 
-  queueTrack = async (trackUri, accessToken) => {
+  queueTrack = async (trackUri, accessToken, deviceId) => {
     const url = new URL("https://api.spotify.com/v1/me/player/queue");
     url.searchParams.set("uri", trackUri);
+    if (deviceId) {
+      url.searchParams.set("device_id", deviceId);
+    }
 
     const response = await fetch(url.toString(), {
       method: "POST",
@@ -115,6 +121,64 @@ before(async () => {
         `Queue failed: ${error.error?.message || response.statusText}`,
       );
     }
+  };
+
+  getDevices = async (accessToken) => {
+    const response = await fetch(
+      "https://api.spotify.com/v1/me/player/devices",
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      },
+    );
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(
+        `Device lookup failed: ${error.error?.message || response.statusText}`,
+      );
+    }
+
+    const data = await response.json();
+    return data.devices || [];
+  };
+
+  transferPlayback = async (deviceId, accessToken) => {
+    const response = await fetch("https://api.spotify.com/v1/me/player", {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ device_ids: [deviceId], play: false }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(
+        `Transfer playback failed: ${error.error?.message || response.statusText}`,
+      );
+    }
+  };
+
+  ensureActiveDevice = async (accessToken) => {
+    const devices = (await getDevices(accessToken)).filter(
+      (d) => !d.is_restricted,
+    );
+
+    if (devices.length === 0) {
+      throw new Error(
+        "No Spotify device found. Open the Spotify app on a phone, desktop, or speaker and try again.",
+      );
+    }
+
+    const active = devices.find((d) => d.is_active);
+    if (active) {
+      return active.id;
+    }
+
+    const target = devices[0];
+    await transferPlayback(target.id, accessToken);
+    return target.id;
   };
 });
 
@@ -278,6 +342,115 @@ describe("queueTrack", () => {
     await assert.rejects(
       () => queueTrack("spotify:track:abc123", "mock-token"),
       /Queue failed: No active device found/,
+    );
+  });
+
+  it("includes device_id in the request when provided", async () => {
+    let calledUrl;
+    mockFetch((url) => {
+      calledUrl = url;
+      return Promise.resolve({
+        ok: true,
+        status: 204,
+        json: () => Promise.resolve({}),
+      });
+    });
+
+    await queueTrack("spotify:track:abc123", "mock-token", "device-xyz");
+    assert.match(calledUrl, /device_id=device-xyz/);
+  });
+});
+
+// ─── ensureActiveDevice ──────────────────────────────────────────────────────
+
+describe("ensureActiveDevice", () => {
+  it("returns the active device id without transferring", async () => {
+    const calls = [];
+    mockFetch((url, opts) => {
+      calls.push({ url, method: opts?.method });
+      return makeFetchResponse({
+        ok: true,
+        status: 200,
+        body: {
+          devices: [
+            { id: "active-1", is_active: true, is_restricted: false },
+            { id: "idle-1", is_active: false, is_restricted: false },
+          ],
+        },
+      });
+    });
+
+    const id = await ensureActiveDevice("mock-token");
+    assert.equal(id, "active-1");
+    // Only the devices lookup should have happened — no transfer (PUT).
+    assert.equal(calls.length, 1);
+    assert.ok(!calls.some((c) => c.method === "PUT"));
+  });
+
+  it("transfers playback to an idle device and returns its id", async () => {
+    const calls = [];
+    mockFetch((url, opts) => {
+      calls.push({ url, method: opts?.method });
+      if (url.includes("/me/player/devices")) {
+        return makeFetchResponse({
+          ok: true,
+          status: 200,
+          body: {
+            devices: [
+              { id: "idle-1", is_active: false, is_restricted: false },
+            ],
+          },
+        });
+      }
+      // transfer playback (PUT /me/player)
+      return Promise.resolve({
+        ok: true,
+        status: 204,
+        json: () => Promise.resolve({}),
+      });
+    });
+
+    const id = await ensureActiveDevice("mock-token");
+    assert.equal(id, "idle-1");
+    assert.ok(
+      calls.some(
+        (c) => c.method === "PUT" && c.url.endsWith("/me/player"),
+      ),
+      "expected a transfer-playback PUT call",
+    );
+  });
+
+  it("ignores restricted devices", async () => {
+    mockFetch(() =>
+      makeFetchResponse({
+        ok: true,
+        status: 200,
+        body: {
+          devices: [
+            { id: "restricted-1", is_active: false, is_restricted: true },
+          ],
+        },
+      }),
+    );
+
+    await assert.rejects(
+      () => ensureActiveDevice("mock-token"),
+      /No Spotify device found/,
+    );
+  });
+
+  it("throws a clear error when no devices are available", async () => {
+    mockFetch(() =>
+      makeFetchResponse({
+        ok: true,
+        status: 200,
+        body: { devices: [] },
+      }),
+    );
+
+    await assert.rejects(
+      () => ensureActiveDevice("mock-token"),
+      /No Spotify device found/,
     );
   });
 });

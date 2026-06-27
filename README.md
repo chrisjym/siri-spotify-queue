@@ -20,15 +20,20 @@ Success response:
 { "success": true, "queued": "Blinding Lights by The Weeknd" }
 ```
 
-The handler ([api/queue.js](api/queue.js)) does three things:
+The handler ([api/queue.js](api/queue.js)) does four things:
 
 1. **Refresh the access token** using the long-lived `SPOTIFY_REFRESH_TOKEN`.
 2. **Search** for the track and take the top result.
-3. **Queue** the track on the user's currently active device.
+3. **Ensure an active device** — list devices and, if none is currently active,
+   transfer playback to the first available one (without starting playback) to
+   re-activate it.
+4. **Queue** the track on that device.
 
-> **Note:** Spotify can only queue to an *active device*. Something must be
-> playing (or have recently played) on Spotify, or the call returns
-> `Queue failed: Not Found`.
+> **Note:** Spotify can only queue to an *active device*. If a device has gone
+> idle, step 3 re-activates it automatically — as long as the Spotify app is
+> still **open** somewhere (phone, desktop, or speaker). If Spotify is fully
+> closed, no device is available to the Web API and the call returns
+> `No Spotify device found. Open the Spotify app...`; open the app and retry.
 
 ## Environment variables
 

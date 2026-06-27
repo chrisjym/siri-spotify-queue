@@ -71,10 +71,81 @@ async function searchTrack(songName, accessToken) {
   };
 }
 
+// --- List Available Devices ---
+async function getDevices(accessToken) {
+  const response = await fetch(
+    "https://api.spotify.com/v1/me/player/devices",
+    {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    },
+  );
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(
+      `Device lookup failed: ${error.error?.message || response.statusText}`,
+    );
+  }
+
+  const data = await response.json();
+  return data.devices || [];
+}
+
+// --- Transfer Playback (re-activate a device) ---
+// Spotify's queue endpoint only works against an *active* device. When a device
+// goes idle, transferring playback to it re-activates the Connect session.
+// play: false means "make it the active device but don't start playing".
+async function transferPlayback(deviceId, accessToken) {
+  const response = await fetch("https://api.spotify.com/v1/me/player", {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ device_ids: [deviceId], play: false }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(
+      `Transfer playback failed: ${error.error?.message || response.statusText}`,
+    );
+  }
+}
+
+// --- Ensure an Active Device ---
+// Returns the id of a device the queue can target. Uses the active device if
+// there is one; otherwise re-activates the first available (last-used) device.
+async function ensureActiveDevice(accessToken) {
+  // Restricted devices can't be controlled via the Web API, so ignore them.
+  const devices = (await getDevices(accessToken)).filter(
+    (d) => !d.is_restricted,
+  );
+
+  if (devices.length === 0) {
+    throw new Error(
+      "No Spotify device found. Open the Spotify app on a phone, desktop, or speaker and try again.",
+    );
+  }
+
+  const active = devices.find((d) => d.is_active);
+  if (active) {
+    return active.id;
+  }
+
+  // No active device, but one is available (app open but idle). Re-activate it.
+  const target = devices[0];
+  await transferPlayback(target.id, accessToken);
+  return target.id;
+}
+
 // --- Queue Track ---
-async function queueTrack(trackUri, accessToken) {
+async function queueTrack(trackUri, accessToken, deviceId) {
   const url = new URL("https://api.spotify.com/v1/me/player/queue");
   url.searchParams.set("uri", trackUri);
+  if (deviceId) {
+    url.searchParams.set("device_id", deviceId);
+  }
 
   const response = await fetch(url.toString(), {
     method: "POST",
@@ -115,7 +186,8 @@ export default async function handler(req, res) {
   try {
     const accessToken = await refreshAccessToken();
     const track = await searchTrack(song.trim(), accessToken);
-    await queueTrack(track.uri, accessToken);
+    const deviceId = await ensureActiveDevice(accessToken);
+    await queueTrack(track.uri, accessToken, deviceId);
 
     return res.status(200).json({
       success: true,
