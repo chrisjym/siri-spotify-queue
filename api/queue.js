@@ -66,9 +66,14 @@ async function searchTrack(songName, accessToken) {
   url.searchParams.set("q", songName);
   url.searchParams.set("type", "track");
   url.searchParams.set("limit", "10");
-  // Resolve results against the account's country so ranking is consistent and
-  // tracks are playable. Override with SPOTIFY_MARKET (e.g. "US") if needed.
-  url.searchParams.set("market", process.env.SPOTIFY_MARKET || "from_token");
+  // Optionally pin results to a country for consistency/playability. Only sent
+  // when SPOTIFY_MARKET is set (e.g. "US"); "from_token" is intentionally NOT
+  // used as a default because it requires the user-read-private scope, which
+  // this app's token does not have (Spotify returns 403 "Insufficient client
+  // scope"). Title scoring below is what actually fixes wrong-track results.
+  if (process.env.SPOTIFY_MARKET) {
+    url.searchParams.set("market", process.env.SPOTIFY_MARKET);
+  }
 
   const response = await fetch(url.toString(), {
     headers: { Authorization: `Bearer ${accessToken}` },

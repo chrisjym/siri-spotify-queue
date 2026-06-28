@@ -94,7 +94,9 @@ before(async () => {
     url.searchParams.set("q", songName);
     url.searchParams.set("type", "track");
     url.searchParams.set("limit", "10");
-    url.searchParams.set("market", process.env.SPOTIFY_MARKET || "from_token");
+    if (process.env.SPOTIFY_MARKET) {
+      url.searchParams.set("market", process.env.SPOTIFY_MARKET);
+    }
 
     const response = await fetch(url.toString(), {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -426,30 +428,41 @@ describe("searchTrack", () => {
     assert.equal(track.uri, "spotify:track:first");
   });
 
-  it("sends a market parameter", async () => {
+  it("omits market by default but includes it when SPOTIFY_MARKET is set", async () => {
+    const okBody = {
+      tracks: {
+        items: [
+          {
+            uri: "spotify:track:abc",
+            name: "Blinding Lights",
+            popularity: 90,
+            artists: [{ name: "The Weeknd" }],
+          },
+        ],
+      },
+    };
+
+    // Default: no SPOTIFY_MARKET → no market param (avoids the from_token 403).
     let calledUrl;
     mockFetch((url) => {
       calledUrl = url;
-      return makeFetchResponse({
-        ok: true,
-        status: 200,
-        body: {
-          tracks: {
-            items: [
-              {
-                uri: "spotify:track:abc",
-                name: "Blinding Lights",
-                popularity: 90,
-                artists: [{ name: "The Weeknd" }],
-              },
-            ],
-          },
-        },
-      });
+      return makeFetchResponse({ ok: true, status: 200, body: okBody });
     });
-
     await searchTrack("Blinding Lights", "mock-token");
-    assert.match(calledUrl, /market=/);
+    assert.doesNotMatch(calledUrl, /market=/);
+
+    // When configured, the country code is sent.
+    process.env.SPOTIFY_MARKET = "US";
+    try {
+      mockFetch((url) => {
+        calledUrl = url;
+        return makeFetchResponse({ ok: true, status: 200, body: okBody });
+      });
+      await searchTrack("Blinding Lights", "mock-token");
+      assert.match(calledUrl, /market=US/);
+    } finally {
+      delete process.env.SPOTIFY_MARKET;
+    }
   });
 });
 
